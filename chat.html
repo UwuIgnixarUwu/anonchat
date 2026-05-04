@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   
-  <!-- === АНТИ-КЭШ (чтобы всегда грузил свежую версию) === -->
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
@@ -39,11 +38,6 @@
       text-align: center; font-weight: bold; font-size: 18px;
       flex-shrink: 0; position: relative;
       box-shadow: 0 2px 10px rgba(0,0,0,0.3); z-index: 10;
-    }
-    #loader {
-      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-      background: rgba(0,0,0,0.8); padding: 20px 30px; border-radius: 12px; z-index: 100;
-      font-size: 16px;
     }
     #messages {
       flex: 1; overflow-y: auto; padding: 15px;
@@ -103,7 +97,6 @@
 
 <div class="app">
   <header>Анонимный Чат</header>
-  <div id="loader">Загрузка чата...</div>
   <div id="messages"></div>
   
   <div id="reply-preview">
@@ -121,16 +114,6 @@
 </div>
 
 <script>
-// === АНТИ-КЭШ + АВТООБНОВЛЕНИЕ ===
-const CURRENT_VERSION = "20250505v1";   // ← Меняй это при каждом обновлении!
-
-if (localStorage.getItem('app_version') !== CURRENT_VERSION) {
-  localStorage.clear();
-  localStorage.setItem('app_version', CURRENT_VERSION);
-  window.location.reload(true);
-}
-
-// Supabase
 const client = supabase.createClient(
   'https://ghcofgqktlzjwahjbnqp.supabase.co',
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdoY29mZ3FrdGx6andhaGpibnFwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczNDgwNjEsImV4cCI6MjA5MjkyNDA2MX0.w21w23WkSnjQLBbTaHhC-dJbzyEs4Qvywwt3WXtQs28'
@@ -176,14 +159,67 @@ function showFull(src) {
   document.getElementById('overlay').style.display = 'flex';
 }
 
-// Остальной код (compressImage, loadMessages, send и т.д.) оставил без изменений, только добавил версию
-// ... (весь твой JS-код ниже остаётся)
+async function compressImage(file) {
+  return new Promise(res => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = e => {
+      const img = new Image();
+      img.src = e.target.result;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        let w = img.width, h = img.height;
+        if (w > 1280) { h *= 1280/w; w = 1280; }
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        canvas.toBlob(res, 'image/jpeg', 0.8);
+      };
+    };
+  });
+}
 
-async function compressImage(file) { ... } // твой код
-async function loadMessages() { ... } // твой код
-async function send() { ... } // твой код
+async function loadMessages() {
+  const { data, error } = await client.from('messages').select('*').order('created_at');
+  if (!error) data.forEach(addMessage);
+}
 
-// Realtime и клавиатура — твой код
+async function send() {
+  const text = inputField.value.trim();
+  const file = fileInput.files[0];
+  if (!text && !file) return;
+
+  inputField.value = '';
+  inputField.style.height = 'auto';
+  
+  let imageUrl = null;
+  if (file) {
+    const compressed = await compressImage(file);
+    const name = Date.now() + '.jpg';
+    const { data, error } = await client.storage.from('chat_images').upload(name, compressed);
+    if (!error) imageUrl = client.storage.from('chat_images').getPublicUrl(name).data.publicUrl;
+    fileInput.value = '';
+  }
+
+  const { data, error } = await client.from('messages').insert({
+    text,
+    image_url: imageUrl,
+    session_id: sessionId,
+    reply_to: currentReply ? currentReply.id : null,
+    reply_text: currentReply ? (currentReply.text || "фото") : null
+  }).select().single();
+
+  if (!error) {
+    addMessage(data);
+    cancelReply();
+  }
+}
+
+client.channel('chat').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, 
+payload => { if (payload.new.session_id !== sessionId) addMessage(payload.new); }).subscribe();
+
+inputField.addEventListener('keydown', e => {
+    if(e.key === 'Enter' && !e.shiftKey && window.innerWidth > 600) { e.preventDefault(); send(); }
+});
 
 loadMessages();
 </script>
